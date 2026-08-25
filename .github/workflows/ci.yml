@@ -1,0 +1,32 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.10", "3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install (CPU/numpy path — no CUDA on CI)
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev,analytics]"
+      - name: Lint
+        run: ruff check rffusion tests
+      - name: Test
+        run: pytest -q
+      - name: Smoke — survey (synthetic source, 2s)
+        run: python -m rffusion.survey --seconds 2 -v
+      - name: Smoke — analytics (synthetic feed)
+        run: python -m rffusion.analytics --events 500 -v
+      - name: Smoke — fusion (correlation demo)
+        run: python -m rffusion.fusion --demo -v

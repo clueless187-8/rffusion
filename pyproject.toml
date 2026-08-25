@@ -1,0 +1,40 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "rffusion"
+version = "0.1.0"
+description = "GPU-accelerated RF survey, analytics, and camera+RF fusion for Jetson Orin"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { file = "LICENSE" }
+authors = [{ name = "Tucker" }]
+keywords = ["sdr", "jetson", "cuda", "rf", "kismet", "wardriving", "fusion"]
+dependencies = [
+    "numpy>=1.24",
+    "pyyaml>=6.0",
+]
+
+[project.optional-dependencies]
+# Jetson: install cupy for your JetPack's CUDA. NOT pulled by default so
+# the package installs and tests on x86 CI without CUDA.
+jetson = ["cupy-cuda12x>=13.0"]
+sdr = ["pyuhd; platform_machine=='aarch64'"]   # UHD Python bindings for B210
+analytics = ["websockets>=12.0", "requests>=2.31"]
+dev = ["pytest>=7.4", "ruff>=0.4"]
+
+[project.scripts]
+rffusion-survey = "rffusion.survey.__main__:main"
+rffusion-analytics = "rffusion.analytics.__main__:main"
+rffusion-fusion = "rffusion.fusion.__main__:main"
+
+[tool.setuptools.packages.find]
+include = ["rffusion*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"

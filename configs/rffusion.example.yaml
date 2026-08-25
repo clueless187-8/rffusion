@@ -1,0 +1,33 @@
+# rffusion configuration. Copy to /etc/rffusion/rffusion.yaml and edit.
+# Per-machine overrides available via env vars (see common/config.py).
+
+sdr:
+  driver: uhd            # uhd (B210), rtlsdr, airspy, soapy
+  args: "type=b200"      # UHD device args for the Ettus B210
+  sample_rate: 20.0e6    # Hz. B210 reaches 56e6; start here, raise as thermals allow.
+  center_freq: 915.0e6   # Hz
+  gain: 40.0             # dB
+  block_size: 262144     # samples/block (power of two, FFT-friendly)
+  ring_depth: 16         # blocks buffered before drop-oldest
+
+gps:
+  enabled: true
+  host: localhost
+  port: 2947
+
+camera:               # Build 3 only
+  enabled: false
+  sensor_id: 0
+  width: 1280
+  height: 720
+  fps: 30
+
+kismet:               # Build 2 only
+  enabled: false      # true + token to use a live feed instead of synthetic
+  host: localhost
+  port: 2501
+  api_token: ""       # from ~/.kismet/kismet_httpd.conf
+
+output:
+  log_dir: /var/lib/rffusion
+  log_max_seconds: 1800
