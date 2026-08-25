@@ -29,5 +29,8 @@ kismet:               # Build 2 only
   api_token: ""       # from ~/.kismet/kismet_httpd.conf
 
 output:
+  # Right for the Jetson, where survey runs as a root service. Unprivileged
+  # runs (dev laptop, CI) fall back to $XDG_STATE_HOME/rffusion automatically;
+  # pass --out DIR to pin it explicitly.
   log_dir: /var/lib/rffusion
   log_max_seconds: 1800

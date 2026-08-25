@@ -58,6 +58,36 @@ class OutputConfig:
     log_dir: Path = Path("/var/lib/rffusion")
     log_max_seconds: int = 1800
 
+    def user_state_dir(self) -> Path:
+        """Per-user fallback log directory (XDG state dir)."""
+        state = os.environ.get("XDG_STATE_HOME")
+        base = Path(state) if state else Path.home() / ".local" / "state"
+        return base / "rffusion"
+
+    def resolve_log_dir(self) -> Path:
+        """Return a writable, existing log directory.
+
+        The /var/lib/rffusion default is right for the Jetson, where the
+        survey runs as a root service. It is not creatable by an ordinary
+        user, so on a dev laptop or a CI runner fall back to a per-user
+        state dir instead of dying: the documented smoke command has to
+        work unprivileged. An explicitly requested directory is not
+        subject to this fallback — see survey.__main__.
+        """
+        fallback = self.user_state_dir()
+        candidates = [self.log_dir] + ([fallback] if fallback != self.log_dir else [])
+        last_exc: OSError | None = None
+        for cand in candidates:
+            try:
+                cand.mkdir(parents=True, exist_ok=True)
+            except OSError as exc:
+                last_exc = exc
+                continue
+            if os.access(cand, os.W_OK):
+                return cand
+            last_exc = PermissionError(f"not writable: {cand}")
+        raise last_exc  # type: ignore[misc]
+
 
 @dataclass
 class Config:

@@ -4,6 +4,8 @@ These exercise the shared plumbing and each build's core logic on the
 NumPy/CPU path, so the whole suite runs on x86 CI with no CUDA or SDR.
 """
 
+from pathlib import Path
+
 import numpy as np
 import pytest
 
@@ -12,7 +14,7 @@ from rffusion.analytics.engine import (
     DeviceObservation,
     WelfordAnomaly,
 )
-from rffusion.common.config import Config
+from rffusion.common.config import Config, OutputConfig
 from rffusion.common.iobuf import BACKEND_NAME, IQRing, alloc_iq
 from rffusion.common.timebase import GpsClock, Stamp, capture_ns
 from rffusion.fusion.correlate import CorrelationEngine, RfEvent, Track
@@ -233,6 +235,22 @@ def test_config_rejects_non_pow2_block():
     p.write_text("sdr:\n  block_size: 1000\n")
     with pytest.raises(ValueError):
         Config.load(p)
+
+
+def test_log_dir_uses_configured_when_writable(tmp_path):
+    out = OutputConfig(log_dir=tmp_path / "logs")
+    assert out.resolve_log_dir() == tmp_path / "logs"
+    assert (tmp_path / "logs").is_dir()
+
+
+def test_log_dir_falls_back_when_unwritable(tmp_path, monkeypatch):
+    # The /var/lib default is not creatable by an unprivileged user; the
+    # documented survey smoke command must still run. Guards the CI runner.
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    out = OutputConfig(log_dir=Path("/proc/nonexistent/rffusion"))
+    resolved = out.resolve_log_dir()
+    assert resolved == tmp_path / "state" / "rffusion"
+    assert resolved.is_dir()
 
 
 def test_backend_is_known():

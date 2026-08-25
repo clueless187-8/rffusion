@@ -27,6 +27,9 @@ def main(argv=None) -> int:
     ap.add_argument("-c", "--config", type=Path)
     ap.add_argument("--nfft", type=int, default=4096)
     ap.add_argument("--seconds", type=float, default=0.0, help="0 = run until Ctrl-C")
+    ap.add_argument("--out", type=Path, metavar="DIR",
+                    help="detection log directory; overrides config and "
+                         "RFFUSION_LOG_DIR, and is used as-is (no fallback)")
     ap.add_argument("-v", "--verbose", action="store_true")
     args = ap.parse_args(argv)
 
@@ -44,8 +47,17 @@ def main(argv=None) -> int:
                             center_freq=cfg.sdr.center_freq)
     gps = GpsClock()  # feed from gpsd elsewhere; empty => utc_ns null
 
-    cfg.output.log_dir.mkdir(parents=True, exist_ok=True)
-    out_path = cfg.output.log_dir / f"survey-{int(time.time())}.jsonl"
+    if args.out is not None:
+        # Explicit request: honour it exactly, and fail loudly if it is
+        # unusable rather than silently logging somewhere else.
+        out_dir = args.out
+        out_dir.mkdir(parents=True, exist_ok=True)
+    else:
+        out_dir = cfg.output.resolve_log_dir()
+        if out_dir != cfg.output.log_dir:
+            log.warning("%s not writable — falling back to %s",
+                        cfg.output.log_dir, out_dir)
+    out_path = out_dir / f"survey-{int(time.time())}.jsonl"
     log.info("logging detections to %s", out_path)
 
     src = select_source(cfg.sdr, ring)
