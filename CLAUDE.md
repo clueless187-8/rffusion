@@ -18,7 +18,7 @@ under `rffusion/common/`.
 
 ```bash
 pip install -e ".[dev,analytics]"     # CPU/dev install (no CUDA needed)
-pytest -q                             # 27 tests, must stay green
+pytest -q                             # 41 tests, must stay green
 ruff check rffusion tests             # must stay clean
 python -m rffusion.survey --seconds 5 -v     # survey smoke (synthetic SDR)
 python -m rffusion.analytics --events 500 -v # analytics smoke (synthetic feed)
@@ -37,7 +37,9 @@ if you do, update this file.
    `common/timebase.capture_ns()` (`CLOCK_MONOTONIC_RAW`). Wall-clock/UTC
    is derived separately via `GpsClock` and used only for logging. A GPS
    lock mid-drive must never warp the fusion clock. Never sort, window, or
-   correlate on UTC.
+   correlate on UTC. Other clock domains (a GPSDO-disciplined SDR's own
+   time) are mapped INTO the monotonic domain via `DeviceClock` before
+   anything downstream sees them — never fused on directly.
 
 2. **Every hardware dependency has a CPU/synthetic fallback.** The whole
    repo runs and tests on x86 with no CUDA, no SDR, no Kismet, no camera:
@@ -99,12 +101,32 @@ configs/     rffusion.example.yaml
   unprivileged (this is what CI runs). `--out DIR` overrides and is used
   as-is, with no fallback, so an explicit path fails loudly.
   `test_log_dir_falls_back_when_unwritable` guards it.
+- **Device time is a THIRD clock domain.** UHD's `time_spec` is the USRP's
+  own clock, not the monotonic base. It never reaches the ring raw — it
+  goes through `timebase.DeviceClock`, which anchors device↔host and
+  converts, so rule 1 still holds. Don't "simplify" by stamping blocks
+  with `time_spec` directly; that quietly reintroduces a clock nobody
+  else in the repo shares. `test_device_clock_*` guards the mapping.
+- **The time fit is computed relative to the first anchor**, not on
+  absolute ns. Absolute stamps are ~1e13+, where float64 loses exactly
+  the sub-microsecond detail PPS sync exists to provide.
+  `test_linear_clock_keeps_resolution_at_realistic_magnitudes` guards it.
+- **YAML 1.1 needs a SIGNED exponent.** PyYAML resolves `20.0e6` to a
+  *string* and only `20.0e+6` to a float — and a str `sample_rate` doesn't
+  fail at load, it fails much later comparing str to int. `SdrConfig.
+  __post_init__` coerces the numerics, and the shipped example uses the
+  signed form. `test_unsigned_exponent_yaml_still_yields_numbers` guards it.
+- **`configs/rffusion.example.yaml` is load-tested.** It's what users copy
+  to `/etc/rffusion`, and a key indented under the wrong section (or an
+  unparseable scalar) surfaces nowhere else.
+  `test_shipped_example_config_loads` guards it.
 
 ## Where to work next
 
-- Build 1: GPSDO/PPS sample-accurate timing (`survey/sdr.UhdSource` has a
-  note where `time_spec` replaces `capture_ns`). Prerequisite for real
-  fusion timing.
+- Build 1: GPSDO/PPS timing is IMPLEMENTED (`sdr.pps_sync`) but has only
+  ever run against the synthetic device clock. Unverified on hardware:
+  needs a B210 + GPSDO to confirm PPS alignment and real anchor error.
+  Prerequisite for real fusion timing.
 - Build 3: DeepStream camera source feeding `Track` into
   `CorrelationEngine`; the correlation core is done, the camera wiring is
   the scaffold.

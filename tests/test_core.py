@@ -4,6 +4,8 @@ These exercise the shared plumbing and each build's core logic on the
 NumPy/CPU path, so the whole suite runs on x86 CI with no CUDA or SDR.
 """
 
+import time
+from itertools import pairwise
 from pathlib import Path
 
 import numpy as np
@@ -14,10 +16,17 @@ from rffusion.analytics.engine import (
     DeviceObservation,
     WelfordAnomaly,
 )
-from rffusion.common.config import Config, OutputConfig
+from rffusion.common.config import Config, OutputConfig, SdrConfig
 from rffusion.common.iobuf import BACKEND_NAME, IQRing, alloc_iq
-from rffusion.common.timebase import GpsClock, Stamp, capture_ns
+from rffusion.common.timebase import (
+    DeviceClock,
+    GpsClock,
+    LinearClock,
+    Stamp,
+    capture_ns,
+)
 from rffusion.fusion.correlate import CorrelationEngine, RfEvent, Track
+from rffusion.survey.sdr import SyntheticSource, time_spec_to_ns
 from rffusion.survey.spectrum import SpectrumEngine
 
 # ---------------------------------------------------------------- timebase
@@ -51,6 +60,106 @@ def test_stamp_now_without_gps():
     s = Stamp.now()
     assert s.mono_ns > 0
     assert s.utc_ns is None
+
+
+# ------------------------------------------- device time / GPSDO discipline
+
+def test_device_clock_no_anchor_returns_none():
+    assert DeviceClock().to_mono_ns(1) is None
+
+
+def test_device_clock_single_anchor_is_offset():
+    dc = DeviceClock()
+    dc.observe(dev_ns=1_000, mono_ns=5_000_000)
+    assert dc.to_mono_ns(2_000) == 5_001_000
+
+
+def test_device_clock_fit_absorbs_oscillator_rate_offset():
+    # Device oscillator runs 10 ppm slow against host monotonic; the fit's
+    # slope term is what keeps a long capture from walking off.
+    dc = DeviceClock()
+    for i in range(8):
+        dev = i * 1_000_000_000
+        dc.observe(dev, 500 + round(dev * (1 - 10e-6)))
+    want = 500 + round(8_000_000_000 * (1 - 10e-6))
+    assert abs(dc.to_mono_ns(8_000_000_000) - want) < 50
+
+
+def test_linear_clock_keeps_resolution_at_realistic_magnitudes():
+    # Real stamps are ~1e13-1e15 ns. Fitting on absolute values in float64
+    # loses exactly the sub-microsecond detail PPS sync exists to provide,
+    # so the fit is done relative to the first anchor.
+    lc = LinearClock()
+    base_x, base_y = 1_700_000_000_000_000, 12_345_678_901_234
+    for i in range(4):
+        lc.observe(base_x + i * 1_000_000, base_y + i * 1_000_000)
+    assert lc.map_ns(base_x + 4_000_000) == base_y + 4_000_000
+
+
+def test_time_spec_to_ns_survives_long_uptime():
+    class FakeTimeSpec:
+        def __init__(self, full, frac):
+            self._full, self._frac = full, frac
+
+        def get_full_secs(self):
+            return self._full
+
+        def get_frac_secs(self):
+            return self._frac
+
+    # 4 days of device uptime plus 1.5 us must not lose the 1.5 us.
+    assert time_spec_to_ns(FakeTimeSpec(345_600, 0.0000015)) == 345_600 * 10**9 + 1500
+
+
+def test_stamp_falls_back_to_host_clock_when_unanchored():
+    src = SyntheticSource(SdrConfig(pps_sync=True), IQRing(block_size=4, depth=2))
+    before = capture_ns()
+    got = src._stamp(None)
+    assert before <= got <= capture_ns()
+
+
+def test_synthetic_device_time_tracks_sample_count():
+    src = SyntheticSource(SdrConfig(sample_rate=1e6, block_size=1024, pps_sync=True),
+                          IQRing(block_size=1024, depth=4))
+    assert src._sim_dev_ns(0) == 0
+    assert src._sim_dev_ns(1024) == 1_024_000
+    assert src._sim_dev_ns(2048) == 2_048_000
+
+
+def test_pps_stamps_are_evenly_spaced_not_host_jittered():
+    # The point of PPS sync: block spacing comes from the disciplined
+    # oscillator, so it is exact rather than however the host was scheduled.
+    n, fs = 512, 1e6
+    ring = IQRing(block_size=n, depth=1024)
+    src = SyntheticSource(SdrConfig(sample_rate=fs, block_size=n, pps_sync=True), ring)
+    src.start()
+    try:
+        # Drain as we go and wait on a generous deadline rather than
+        # assuming a fixed sleep yields a fixed block count — thread
+        # spin-up and sleep granularity vary too much across machines.
+        stamps: list[int] = []
+        deadline = time.monotonic() + 5.0
+        while len(stamps) < 8 and time.monotonic() < deadline:
+            blk = ring.pop(timeout=0.5)
+            if blk is None:
+                continue
+            if blk.dropped_before:
+                stamps = []  # a gap makes spacing meaningless; restart
+                continue
+            stamps.append(blk.mono_ns)
+    finally:
+        src.stop()
+
+    assert len(stamps) >= 8
+    step = n * 1_000_000_000 // int(fs)
+    assert {b - a for a, b in pairwise(stamps)} == {step}
+
+
+def test_non_pps_run_still_stamps_from_host():
+    src = SyntheticSource(SdrConfig(pps_sync=False), IQRing(block_size=4, depth=2))
+    assert not src.dev_clock.has_fix
+    before = capture_ns()
+    assert before <= src._stamp(None) <= capture_ns()
 
 
 # ------------------------------------------------------------------ iobuf
@@ -235,6 +344,55 @@ def test_config_rejects_non_pow2_block():
     p.write_text("sdr:\n  block_size: 1000\n")
     with pytest.raises(ValueError):
         Config.load(p)
+
+
+def test_shipped_example_config_loads():
+    # The example is what users copy to /etc/rffusion; a key indented into
+    # the wrong section fails only at load time, which no other test hits.
+    cfg = Config.load(Path(__file__).resolve().parent.parent
+                      / "configs" / "rffusion.example.yaml")
+    assert cfg.sdr.driver == "uhd"
+    assert cfg.sdr.pps_sync is False          # timing knobs live under sdr:
+    assert cfg.sdr.pps_timeout_s > 0
+    # Not just present — actually numeric. See below.
+    assert cfg.sdr.sample_rate == 20e6
+    assert cfg.sdr.center_freq == 915e6
+
+
+def test_unsigned_exponent_yaml_still_yields_numbers(tmp_path):
+    # PyYAML is YAML 1.1: "20.0e6" resolves to a str, only "20.0e+6" to a
+    # float. That is exactly how people write sample rates, and a str
+    # sample_rate does not fail at load — it fails later comparing str to
+    # int, far from the cause. SdrConfig coerces instead.
+    p = tmp_path / "unsigned.yaml"
+    p.write_text("sdr:\n  sample_rate: 20.0e6\n  center_freq: 915.0e6\n")
+    cfg = Config.load(p)
+    assert isinstance(cfg.sdr.sample_rate, float)
+    assert cfg.sdr.sample_rate == 20e6
+    assert cfg.sdr.center_freq == 915e6
+
+
+def test_non_numeric_sdr_value_names_the_field():
+    with pytest.raises(ValueError, match="sdr.sample_rate"):
+        SdrConfig(sample_rate="fast")
+
+
+def test_config_rejects_typoed_time_source():
+    # UHD ignores an unknown source, which would leave you with
+    # undisciplined time that still *looks* PPS-synced. Fail loudly.
+    import pathlib
+    import tempfile
+    p = pathlib.Path(tempfile.mktemp(suffix=".yaml"))
+    p.write_text("sdr:\n  time_source: gpsd\n")   # 'gpsdo' typoed
+    with pytest.raises(ValueError):
+        Config.load(p)
+
+
+def test_config_accepts_gpsdo_sources():
+    cfg = Config()
+    cfg.sdr.clock_source = "gpsdo"
+    cfg.sdr.time_source = "gpsdo"
+    cfg.validate()   # must not raise
 
 
 def test_log_dir_uses_configured_when_writable(tmp_path):

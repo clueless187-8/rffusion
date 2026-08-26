@@ -28,6 +28,40 @@ class SdrConfig:
     block_size: int = 1 << 18          # samples per capture block
     ring_depth: int = 16               # blocks buffered before drop-oldest
 
+    # --- timing discipline (Build 1 -> prerequisite for Build 3 fusion) ---
+    # clock/time source as UHD names them: "internal", "external", "gpsdo".
+    # Empty leaves the device default alone.
+    clock_source: str = ""
+    time_source: str = ""
+    # Align device time to the PPS edge at startup and stamp blocks from
+    # UHD time_spec instead of host recv-completion time. Requires a
+    # disciplined reference (GPSDO or external 10 MHz + PPS).
+    pps_sync: bool = False
+    pps_timeout_s: float = 3.0         # how long to wait for a PPS edge
+    time_anchor_interval_s: float = 10.0  # re-anchor device<->host cadence
+
+    def __post_init__(self) -> None:
+        """Coerce numerics that YAML may hand us as strings.
+
+        PyYAML implements YAML 1.1, whose float resolver requires a SIGNED
+        exponent: "20.0e+6" is a float, "20.0e6" is a plain string. Sample
+        rates and centre frequencies are exactly where people write the
+        unsigned form, and a str sample_rate does not fail at load — it
+        fails later, comparing str to int, somewhere unhelpful. Coerce here
+        so the config means what it looks like.
+        """
+        for name, cast in (("sample_rate", float), ("center_freq", float),
+                           ("gain", float), ("block_size", int),
+                           ("ring_depth", int), ("pps_timeout_s", float),
+                           ("time_anchor_interval_s", float)):
+            value = getattr(self, name)
+            try:
+                setattr(self, name, cast(value))
+            except (TypeError, ValueError) as exc:
+                raise ValueError(
+                    f"sdr.{name}: expected a number, got {value!r}") from exc
+        self.pps_sync = bool(self.pps_sync)
+
 
 @dataclass
 class GpsConfig:
@@ -141,3 +175,14 @@ class Config:
             raise ValueError("sdr.center_freq out of plausible range")
         if self.sdr.ring_depth < 2:
             raise ValueError("sdr.ring_depth must be >= 2")
+        # A typo here would otherwise be silent: UHD ignores an unknown
+        # source and you'd get undisciplined time that *looks* disciplined.
+        known = {"", "internal", "external", "gpsdo", "mimo"}
+        if self.sdr.clock_source not in known:
+            raise ValueError(f"sdr.clock_source must be one of {sorted(known)}")
+        if self.sdr.time_source not in known:
+            raise ValueError(f"sdr.time_source must be one of {sorted(known)}")
+        if self.sdr.pps_timeout_s <= 0:
+            raise ValueError("sdr.pps_timeout_s must be positive")
+        if self.sdr.time_anchor_interval_s <= 0:
+            raise ValueError("sdr.time_anchor_interval_s must be positive")

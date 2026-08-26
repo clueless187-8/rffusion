@@ -4,11 +4,22 @@
 sdr:
   driver: uhd            # uhd (B210), rtlsdr, airspy, soapy
   args: "type=b200"      # UHD device args for the Ettus B210
-  sample_rate: 20.0e6    # Hz. B210 reaches 56e6; start here, raise as thermals allow.
-  center_freq: 915.0e6   # Hz
+  sample_rate: 20.0e+6   # Hz. B210 reaches 56e6; start here, raise as thermals allow.
+  center_freq: 915.0e+6  # Hz
   gain: 40.0             # dB
   block_size: 262144     # samples/block (power of two, FFT-friendly)
   ring_depth: 16         # blocks buffered before drop-oldest
+
+  # --- timing discipline (see docs/build1-survey.md) ---
+  # Off by default: without a GPSDO or external 10 MHz + PPS there is
+  # nothing to discipline against, and blocks stay host-stamped.
+  # Turn on for sample-accurate block spacing — required before this
+  # survey can feed Build 3 fusion.
+  pps_sync: false
+  clock_source: ""          # internal | external | gpsdo
+  time_source: ""           # internal | external | gpsdo
+  pps_timeout_s: 3.0        # no edge within this => warn, host-stamp instead
+  time_anchor_interval_s: 10.0   # device<->host re-anchor cadence
 
 gps:
   enabled: true
