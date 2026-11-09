@@ -28,6 +28,33 @@ python -m rffusion.fusion --demo -v          # fusion correlation demo
 On the Jetson, add extras: `pip install -e ".[jetson,sdr,analytics]"`
 (CuPy for cuFFT, UHD bindings for the B210).
 
+The same commands via `make` (the Makefile is the canonical encoding of
+the definition of done below; `make help` lists everything):
+
+```bash
+make install   # pip install -e ".[dev,analytics]" (PIP_FLAGS=--break-system-packages by default)
+make check     # install + lint + test + smoke — the definition of done
+make lint      # ruff check rffusion tests
+make fmt       # ruff format + ruff check --fix (writes files)
+make test      # pytest -q
+make smoke     # the three synthetic smokes; survey logs to ./.smoke (gitignored)
+make dev       # run survey against the synthetic SDR until Ctrl-C
+```
+
+There is no deploy step: on the Jetson, copy `configs/rffusion.example.yaml`
+to `/etc/rffusion/rffusion.yaml` and run `python -m rffusion.survey -c ...`
+(see README). Exact pins the toolchain was last verified with live in
+`requirements-dev.txt`; `.python-version` is 3.12; `.devcontainer/` runs
+`make check` on create.
+
+## Verification loop
+
+Run `make check` after every change. Do not report a task done until it
+passes. If a check cannot run locally, say so explicitly. CUDA, the B210,
+Kismet and the camera are never available in `make check`; the synthetic
+fallbacks are what it exercises, and anything hardware-only is reported
+as unverified, not as passing.
+
 ## Non-negotiable design rules
 
 These are load-bearing. Don't violate them without a very good reason, and
@@ -136,3 +163,66 @@ configs/     rffusion.example.yaml
 `pytest -q` green, `ruff check` clean, and if you touched a hardware path,
 its synthetic fallback still runs the matching `python -m rffusion.<build>`
 smoke command.
+
+`make check` runs exactly this (all three smokes, every time). The Stop
+hook in `.claude/settings.json` runs it when a session ends.
+
+## Hardware & constants (as found in the repo — don't invent)
+
+- Board: NVIDIA Jetson Orin Nano (Super); extras `jetson` (`cupy-cuda12x`),
+  `sdr` (`pyuhd`, aarch64 only).
+- SDR: Ettus B210, UHD args `type=b200`; default `sample_rate` 20.0e+6
+  (B210 max 56e6), `center_freq` 915.0e+6, `gain` 40 dB, `block_size`
+  262144, `ring_depth` 16. Timing knobs under `sdr:`: `pps_sync`,
+  `clock_source` / `time_source` ∈ {internal, external, gpsdo},
+  `pps_timeout_s` 3.0, `time_anchor_interval_s` 10.0.
+- GPS: gpsd at `localhost:2947`.
+- Kismet: `ws://host:2501/devices/monitor.ws?KISMET=<token>`; token from
+  `~/.kismet/kismet_httpd.conf`, configured as `kismet.api_token` (keep it
+  out of git — the shipped example is empty).
+- Camera (Build 3): CSI `sensor_id` 0, 1280x720 @ 30 fps, DeepStream.
+- Output: `output.log_dir` `/var/lib/rffusion` → falls back to
+  `$XDG_STATE_HOME/rffusion`; `--out DIR` overrides with no fallback.
+- Env vars: `RFFUSION_LOG_DIR` (overrides `output.log_dir`),
+  `XDG_STATE_HOME`.
+- Config file: `configs/rffusion.example.yaml` → `/etc/rffusion/rffusion.yaml`.
+
+## Standing rules
+
+- No new dependencies without asking. `pyproject.toml` extras are
+  deliberate (see the CUDA note there).
+- Prefer small commits; one logical change each.
+- Plan before multi-file changes, especially anything under
+  `rffusion/common/`.
+- Write or extend a test in `tests/test_core.py` with every behavior
+  change; the gotchas list above is the pattern.
+- Secrets (Kismet token, anything else) live in env vars or the local
+  `/etc/rffusion/rffusion.yaml` only. Never commit credentials.
+- Project hooks (`.claude/settings.json`): ruff-format on every edited
+  `.py`; `.claude/hooks/guard.sh` blocks force-push, `rm -rf /`,
+  `git reset --hard origin*`, and `--no-verify`.
+
+## Decision log
+
+Architecture decisions live in `docs/adr/`. ADRs 0001–0005 are the
+non-negotiable rules and scope boundaries above, with rationale and the
+tests that guard each. New load-bearing decisions get a new ADR (copy
+`docs/adr/0000-template.md`) in the same PR. Reference material index:
+`docs/reference/README.md`.
+
+## Open backlog
+
+No TODO/FIXME markers in code as of 2026-11-09. Open work is the "Where
+to work next" section above (PPS/GPSDO hardware verification; DeepStream
+camera source for fusion), plus: the tree is not `ruff format`-clean (13
+files) — `make fmt-check` is advisory until a one-time format commit
+lands, after which it should be added to `make check`.
+
+## Before merging
+
+Run the `agent-protocols:code-reviewer` agent (or `/review`) on the full
+diff of the branch. For anything touching `rffusion/common/` (the shared
+time base and ring), `survey/sdr.py` (hardware control), the Kismet token
+path in `analytics/feed.py`, or auth of any kind, also run
+`security-auditor`. Merge only with `make check` green in CI (`check.yml`)
+and the reviewer findings addressed or explicitly deferred in the PR.
