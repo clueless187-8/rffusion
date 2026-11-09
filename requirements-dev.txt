@@ -1,0 +1,10 @@
+# Exact pins of the CPU/dev toolchain that `make check` was last verified with
+# (Python 3.12/3.13, x86, no CUDA). Used by .devcontainer and the check.yml
+# workflow for reproducibility. pyproject.toml carries the compatible-release
+# floors; `make install` without this file still works on Python 3.10/3.11.
+numpy==2.5.3
+pyyaml==6.0.3
+websockets==17.4
+requests==2.34.2
+pytest==9.1.1
+ruff==0.17.4
