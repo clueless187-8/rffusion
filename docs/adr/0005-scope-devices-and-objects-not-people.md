@@ -26,6 +26,6 @@ From CLAUDE.md, verbatim:
 ## Consequences
 
 - `AnalyticsEngine._key_for` aggregates randomized MACs by phy+channel;
-  `test_*randomized*` in `tests/test_core.py` guards this.
+  `test_analytics_randomized_macs_grouped` guards this.
 - Pull requests adding face recognition, person re-identification, or
   per-person persistent keys are out of scope and should be declined.
